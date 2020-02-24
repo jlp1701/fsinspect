@@ -1,0 +1,65 @@
+/* general styles */
+html {
+    font-family: "Trebuchet MS", Arial, Helvetica, sans-serif;    
+}
+
+body > div {
+    margin: 5px;
+}
+
+
+/* Partition View */
+ul {
+    list-style-type: none;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  
+  li {
+    float: left;
+  }
+  
+  li div.sectordesc {
+    display: block;
+    color: white;
+    text-align: center;
+    margin: 0px 5px 0px 0px;
+    padding: 10px;
+    text-decoration: none;
+    border: 3px solid blue;
+    background-color: #333333;
+  }
+
+  li div.sectordesc:hover {
+    background-color: #111111;
+  }
+
+  /* Detailed View */
+  #details {
+    
+    border-collapse: collapse;
+    width: 100%;
+    table-layout: auto;
+  }
+
+  #details td, #details th {
+    border: 1px solid #ddd;
+    padding: 8px;
+  }
+
+  #details tr:nth-child(even){background-color: #f2f2f2;}
+
+  /*#details tr:hover {background-color: #ddd;}*/
+
+  #details th {
+    padding-top: 12px;
+    padding-bottom: 12px;
+    text-align: left;
+    background-color: #4CAF50;
+    color: white;
+  }
+
+  .number-cell {
+    width: 10%;
+  }
