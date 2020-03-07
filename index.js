@@ -1,6 +1,7 @@
 'use strict';
 
 var fs = require("fs");
+var util = require("util");
 
 function onLoadImage() {
     var imgPath = document.getElementById("imgPath").value;
@@ -14,65 +15,58 @@ function onLoadImage() {
     // partList.appendChild(createPartitionElement(p3));
     
     // clear displayed partitions
-    let mbr = tryParseMbr(imgPath);
-    if (mbr !== null) {
-        // create partInfo objects for mbr and all partitions
-        
-        // display them
-    } else {
-        // display mbr error
+    var mbr = null;
+    try {
+        mbr = tryParseMbr(imgPath);    
+    } catch (error) {
+        console.log(error);
     }
-    
+    // MBR sucessfully parsed
+    var partList = document.getElementById("partList");
+    partList.appendChild(createPartitionElement(mbr));
+
+    createDetailedView(mbr);
 };
 
 // checks if image has Msdos/MBR or GPT partition scheme or invalid
 function tryParseMbr(imgPath) {
-    // open image
-    var fd = fs.openSync(imgPath, 'r');
-    var mbrBuf = Buffer.alloc(512);
-    var numRead = fs.readSync(fd, mbrBuf, 0, 512, 0);
-    fs.closeSync(fd);
-    if (numRead == 512) {
-        console.log("Sucessfully read:", numRead, "bytes.");
-        // check for signature 0x55AA
-        if (mbrBuf.readUInt16BE(510) == 0x55AA) {
-            // parse mbr
-            let mbr = parseMbr(mbrBuf);
-            return mbr;
-        } else {
-            // invalid signature of mbr
-            console.log("Error: Invalid MBR signature!");
-            return null;
-        }
-    } 
-    else {
-        console.log("Error while reading ", imgPath);
-        return null;
+    var mbr = parseMbr(imgPath);
+    var sig = mbr.children[mbr.children.length-1].value;
+    if (sig != 0x55AA) {
+        throw "Wrong signature: " + sig;
     }
-    
-    
+    return mbr;
 }
 
 // analyze master boot record (sector 0 of image)
-function parseMbr(buf) {
-    let mbr = new DataSection(0, 0, 512, "MBR", raw, buf, "Master Boot Record");
-    mbr.children.push(new DataSection(0, 0, 446, "Boot code", raw, buf.slice(0, 0+446), "Bootstrap code area"));
-    mbr.children.push(new DataSection(0, 446, 16, "Partition Entry #1", raw, buf.slice(446, 446+16), ""));
-    mbr.children.push(new DataSection(0, 462, 16, "Partition Entry #2", raw, buf.slice(462, 462+16), ""));
-    mbr.children.push(new DataSection(0, 478, 16, "Partition Entry #3", raw, buf.slice(478, 478+16), ""));
-    mbr.children.push(new DataSection(0, 494, 16, "Partition Entry #4", raw, buf.slice(494, 494+16), ""));
-    mbr.children.push(new DataSection(0, 510, 2, "Signature", raw, [0x55, 0xAA],  "The signature"));
+function parseMbr(imgPath) {
+    let mbr = new DataSection(imgPath, 0, 512, "MBR", hexArray, "Master Boot Record");
+    mbr.children.push(new DataSection(imgPath, 0, 446, "Boot code", hexArray, "Bootstrap code area"));
+    mbr.children.push(addPartitionEntry(new DataSection(imgPath, 446, 16, "Partition Entry #1", hexArray, "")));
+    mbr.children.push(addPartitionEntry(new DataSection(imgPath, 462, 16, "Partition Entry #2", hexArray, "")));
+    mbr.children.push(addPartitionEntry(new DataSection(imgPath, 478, 16, "Partition Entry #3", hexArray, "")));
+    mbr.children.push(addPartitionEntry(new DataSection(imgPath, 494, 16, "Partition Entry #4", hexArray, "")));
+    mbr.children.push(new DataSection(imgPath, 510, 2, "Signature", uintBE,  "The signature"));
 
     return mbr;
 };
 
-function parsePartitionEntry(ds) {
+function addPartitionEntry(ds) {
+    var offset = ds.offset;
+    var imgPath = ds.imgPath;
     // 0,1 status
+    ds.children.push(new DataSection(imgPath, offset+0, 1, "Status", uintLE, "Status of the Partition"));
     // 1,3 CHS address of start sector
+    ds.children.push(new DataSection(imgPath, offset+1, 3, "CHS Start", hexArray, "CHS Start Sector of partition"));
     // 4,1 Parition type
+    ds.children.push(new DataSection(imgPath, offset+4, 1, "Partition type", uintLE, ""));
     // 5,3 CHS address of last sector
+    ds.children.push(new DataSection(imgPath, offset+5, 3, "CHS End", hexArray, "CHS Last Sector of partition"));
     // 8,4 LBA of first sector
+    ds.children.push(new DataSection(imgPath, offset+8, 4, "LBA Start", uintLE, "LBA of first sector"));
     // 12,4 Number of sectors in partition
+    ds.children.push(new DataSection(imgPath, offset+12, 4, "Number of sectors", uintLE, "Size of partition in sectors"));
+    return ds;
 }
 
 // analyze gpt scheme
@@ -80,49 +74,151 @@ function analyzeGpt(imgPath) {
     
 }
 
-function createPartitionElement(partInfo) {
+function createPartitionElement(ds) {
     var item = document.createElement("li");
     item.classList.add("sectordesc");
-    item.innerHTML = "<div>" + partInfo.name + "</div>";
-    item.innerHTML += "<div>" + "Sector Offset: " + partInfo.startSector + "</div>";
-    item.innerHTML += "<div>" + "Num of Sectors: " + partInfo.numSectors + "</div>";
+    item.innerHTML = "<div>" + ds.name + "</div>";
+    item.innerHTML += "<div>" + "Sector Offset: " + ds.offset / 512 + "</div>";
+    item.innerHTML += "<div>" + "Num of Sectors: " + ds.size / 512 + "</div>";
     return item;
 }
 
-class PartInfo {
+function createDetailedView(ds) {
+    var old_tbody = document.getElementById("detailsBody");
+    var new_tbody = document.createElement('tbody');
+    old_tbody.parentNode.replaceChild(new_tbody, old_tbody);
+    var childs = dsToTableRows(new_tbody, ds);
+}
+
+function dsToTableRows(tBody, ds) {
+    var row = tBody.insertRow(-1);
+    dsFillRow(row, ds);
+    var node = {};
+    node.row = row;
+    
+    node.children = [];
+    ds.children.forEach(element => {
+        node.children.push(dsToTableRows(tBody, element));
+    });
+    
+    if (node.children.length > 0) {
+        node.collapsed = false;
+        row.classList.add("expandable");
+        row.onclick = ( function (){
+            
+            if (node.collapsed) {
+                var nodes = getSubnodes(node, 1);
+                nodes.forEach(element => {
+                    element.row.classList.remove("hidden");
+                });
+                node.collapsed = false;
+            }
+            else {
+                var nodes = getSubnodes(node);
+                nodes.forEach(element => {
+                    if (element.hasOwnProperty("collapsed")) {
+                        element.collapsed = true;
+                    }
+                    element.row.classList.add("hidden");
+                });
+                node.collapsed = true;
+            }
+        });    
+    }    
+
+    return node;
+}
+
+function getSubnodes(node, levels = -1) {
+    var list = []
+    
+    if (levels != -1) {
+        levels--;
+        if (levels < 0) return [];
+    }
+
+    node.children.forEach(element => {
+        list.push(element);
+        var subnodes = (getSubnodes(element, levels));
+        subnodes.forEach(element => {
+            list.push(element);
+        });
+    });
+    return list;
+}
+
+function dsFillRow(row, ds) {
+    row.insertCell(-1).innerHTML = ds.offset;
+    row.insertCell(-1).innerHTML = ds.size;
+    row.insertCell(-1).innerHTML = ds.name;
+
+    var valRow = row.insertCell(-1);
+    valRow.classList.add("value");
+    if (ds.valueType == hexArray && ds.size > 32)
+        valRow.innerHTML = ds.value.slice(0, 32).concat(["..."]);
+    else
+        valRow.innerHTML = ds.value.toString(16).toUpperCase();
+
+    row.insertCell(-1).innerHTML = ds.desc;
+}
+
+/* class PartInfo {
     constructor(name, startSector, numSectors) {
         this.name = name;
         this.startSector = startSector;
         this.numSectors = numSectors;
     }
-}
+} */
 
-class PartitionScheme {
+/* class PartitionScheme {
     constructor() {
         this.pInfoList = [];
     }
 }
-
+ */
 
 class DataSection {
-    constructor(sector, offset, size, name, valueType, data, desc) {
-        this.sector = sector;
+    constructor(imgPath, offset, size, name, valueType, desc) {
+        this.imgPath = imgPath;
         this.offset = offset;
         this.size = size;
         this.name = name;
         this.valueType = valueType;
-        this.data = data;
         this.desc = desc;
         this.children = []; // children list of DataSections; fine grained description
     }
 
-    get value() {
-        return this.valueType(this.data);
+    readData(offset = this.offset, size = this.size) {
+        // check data
+        if (offset > this.offset + this.size ||
+            size > this.size ||
+            offset + size > this.offset + this.size) {
+                throw "Out of bounds read!";
+            } 
+        
+        // open image
+        var fd = fs.openSync(this.imgPath, 'r');
+        var rBuf = Buffer.alloc(size);
+        var numRead = fs.readSync(fd, rBuf, 0, size, offset);
+        fs.closeSync(fd);
+        if (numRead == size) {
+            console.log("Sucessfully read:", numRead, "bytes.");
+            return rBuf;
+        } 
+        else {
+            console.log("Error while reading ", imgPath);
+            throw "Read error";
+        }
     }
+
+    get value() {
+        return this.valueType(this.readData());
+    }
+
 }
 
-function raw(data) {
-    let rawStr = "[";
+function hexArray(data) {
+/*     let rawStr = "[";
     let values = "";
     let elem;
     for (elem of data) {
@@ -134,7 +230,12 @@ function raw(data) {
     }
     rawStr += values;
     rawStr += "]";
-    return rawStr;
+    return rawStr; */
+    var ar = [];
+    for (const elem of data) {
+        ar.push(("00" + elem.toString(16).toUpperCase()).slice(-2));
+    }
+    return ar;
 }
 
 function uintLE(data) {
