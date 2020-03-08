@@ -14,19 +14,45 @@ function onLoadImage() {
     // partList.appendChild(createPartitionElement(p2));
     // partList.appendChild(createPartitionElement(p3));
     
+    clearLoadImgErrMsg();
+    clearParitionList();
+    clearDetailedView();
+
     // clear displayed partitions
     var mbr = null;
     try {
         mbr = tryParseMbr(imgPath);    
     } catch (error) {
         console.log(error);
+        setLoadImgErrorMsg(error);
+        return;
     }
     // MBR sucessfully parsed
     var partList = document.getElementById("partList");
     partList.appendChild(createPartitionElement(mbr));
 
-    createDetailedView(mbr);
+    // check if disk has GPT
+
+    // analyze paritions
+    var i = 1;
+    for (const p of mbr.partitionList) {
+        if (p.numSectors > 0) {
+            var pDs = new DataSection(imgPath, p.startLBA*512, p.numSectors*512, `Partition #${i++}`, hexArray, "First Partition");
+            partList.appendChild(createPartitionElement(pDs));
+        }
+    }
+
 };
+
+function setLoadImgErrorMsg(msg) {
+    var err = document.getElementById("loadImageErrorMsg");
+    err.innerText = msg;
+    err.classList.remove("hidden");
+}
+
+function clearLoadImgErrMsg() {
+    document.getElementById("loadImageErrorMsg").classList.add("hidden");
+}
 
 // checks if image has Msdos/MBR or GPT partition scheme or invalid
 function tryParseMbr(imgPath) {
@@ -35,6 +61,26 @@ function tryParseMbr(imgPath) {
     if (sig != 0x55AA) {
         throw "Wrong signature: " + sig;
     }
+    mbr.signature = sig;
+
+    // set boot code
+    mbr.bootCode = mbr.children[0].value;
+
+    // parse partition entries
+    var pList = [];
+    for (let i = 0; i < 4; i++) {
+        var dsP = mbr.children[i+1];
+        var p = {};
+        p.status = dsP.children[0].value;
+        p.startCHS = dsP.children[1].value;
+        p.partType = dsP.children[2].value;
+        p.endCHS = dsP.children[3].value;
+        p.startLBA = dsP.children[4].value;
+        p.numSectors = dsP.children[5].value;
+        pList.push(p);    
+    }
+    mbr.partitionList = pList;
+
     return mbr;
 }
 
@@ -74,18 +120,34 @@ function analyzeGpt(imgPath) {
     
 }
 
+function clearParitionList() {
+    var ul = document.getElementById("partList");
+    while(ul.firstChild) ul.removeChild(ul.firstChild);
+}
+
 function createPartitionElement(ds) {
     var item = document.createElement("li");
     item.classList.add("sectordesc");
     item.innerHTML = "<div>" + ds.name + "</div>";
     item.innerHTML += "<div>" + "Sector Offset: " + ds.offset / 512 + "</div>";
     item.innerHTML += "<div>" + "Num of Sectors: " + ds.size / 512 + "</div>";
+    item.onclick = (() => {
+        clearDetailedView();
+        createDetailedView(ds);
+    });
     return item;
+}
+
+function clearDetailedView() {
+    var tBody = document.getElementById("detailsBody");
+    while (tBody.firstChild) tBody.removeChild(tBody.firstChild);
+    
 }
 
 function createDetailedView(ds) {
     var old_tbody = document.getElementById("detailsBody");
-    var new_tbody = document.createElement('tbody');
+    var new_tbody = old_tbody.cloneNode();
+    
     old_tbody.parentNode.replaceChild(new_tbody, old_tbody);
     var childs = dsToTableRows(new_tbody, ds);
 }

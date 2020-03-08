@@ -35,6 +35,17 @@ li.sectordesc {
     background-color: #111111;
   }
 */
+
+p.errorMsg {
+  color: white;
+  background-color: red;
+  margin: 5px;
+  padding: 2px;
+  border: 2px solid red;
+  width: max-content;
+  font-weight: bold;
+}
+
 /* Detailed View */
 #detailsTable {
   
@@ -60,7 +71,7 @@ li.sectordesc {
   color: white;
 }
 
-tr.hidden {
+.hidden {
   display: none;
 }
 
