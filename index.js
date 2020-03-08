@@ -39,6 +39,9 @@ function onLoadImage() {
         if (p.numSectors > 0) {
             var pDs = new DataSection(imgPath, p.startLBA*512, p.numSectors*512, `Partition #${i++}`, hexArray, "First Partition");
             partList.appendChild(createPartitionElement(pDs));
+            // check if any filesystem is on partition
+
+            // if yes, then parse filesystem
         }
     }
 
