@@ -1,15 +1,16 @@
 'use strict';
 
-var fs = require("fs");
-var util = require("util");
+let fs = require("fs");
+let util = require("util");
 
 function onLoadImage() {
-    var imgPath = document.getElementById("imgPath").value;
+    let imgPath = document.getElementById("imgPath").value;
+    let sectorSize =  parseInt(document.getElementById("sectorSize").value);
     console.log("Loading image:", imgPath);
-    // var p1 = new PartInfo("MBR", 0, 1);
-    // var p2 = new PartInfo("Lul", 1, 1337);
-    // var p3 = new PartInfo("Rofl", 1338, 114);
-    // var partList = document.getElementById("partList");
+    // let p1 = new PartInfo("MBR", 0, 1);
+    // let p2 = new PartInfo("Lul", 1, 1337);
+    // let p3 = new PartInfo("Rofl", 1338, 114);
+    // let partList = document.getElementById("partList");
     // partList.appendChild(createPartitionElement(p1));
     // partList.appendChild(createPartitionElement(p2));
     // partList.appendChild(createPartitionElement(p3));
@@ -19,7 +20,7 @@ function onLoadImage() {
     clearDetailedView();
 
     // clear displayed partitions
-    var mbr = null;
+    let mbr = null;
     try {
         mbr = tryParseMbr(imgPath);    
     } catch (error) {
@@ -28,17 +29,17 @@ function onLoadImage() {
         return;
     }
     // MBR sucessfully parsed
-    var partList = document.getElementById("partList");
-    partList.appendChild(createPartitionElement(mbr));
+    let partList = document.getElementById("partList");
+    partList.appendChild(createPartitionElement(mbr, sectorSize));
 
     // check if disk has GPT
 
     // analyze paritions
-    var i = 1;
+    let i = 1;
     for (const p of mbr.partitionList) {
         if (p.numSectors > 0) {
-            var pDs = new DataSection(imgPath, p.startLBA*512, p.numSectors*512, `Partition #${i++}`, hexArray, "First Partition");
-            partList.appendChild(createPartitionElement(pDs));
+            let pDs = new DataSection(imgPath, p.startLBA*sectorSize, p.numSectors*sectorSize, `Partition #${i++}`, hexArray, "First Partition");
+            partList.appendChild(createPartitionElement(pDs, sectorSize));
             // check if any filesystem is on partition
 
             // if yes, then parse filesystem
@@ -48,7 +49,7 @@ function onLoadImage() {
 };
 
 function setLoadImgErrorMsg(msg) {
-    var err = document.getElementById("loadImageErrorMsg");
+    let err = document.getElementById("loadImageErrorMsg");
     err.innerText = msg;
     err.classList.remove("hidden");
 }
@@ -59,8 +60,8 @@ function clearLoadImgErrMsg() {
 
 // checks if image has Msdos/MBR or GPT partition scheme or invalid
 function tryParseMbr(imgPath) {
-    var mbr = parseMbr(imgPath);
-    var sig = mbr.children[mbr.children.length-1].value;
+    let mbr = createMbrTemplate(imgPath);
+    let sig = mbr.children[mbr.children.length-1].value;
     if (sig != 0x55AA) {
         throw "Wrong signature: " + sig;
     }
@@ -70,10 +71,10 @@ function tryParseMbr(imgPath) {
     mbr.bootCode = mbr.children[0].value;
 
     // parse partition entries
-    var pList = [];
+    let pList = [];
     for (let i = 0; i < 4; i++) {
-        var dsP = mbr.children[i+1];
-        var p = {};
+        let dsP = mbr.children[i+1];
+        let p = {};
         p.status = dsP.children[0].value;
         p.startCHS = dsP.children[1].value;
         p.partType = dsP.children[2].value;
@@ -88,7 +89,7 @@ function tryParseMbr(imgPath) {
 }
 
 // analyze master boot record (sector 0 of image)
-function parseMbr(imgPath) {
+function createMbrTemplate(imgPath) {
     let mbr = new DataSection(imgPath, 0, 512, "MBR", hexArray, "Master Boot Record");
     mbr.children.push(new DataSection(imgPath, 0, 446, "Boot code", hexArray, "Bootstrap code area"));
     mbr.children.push(addPartitionEntry(new DataSection(imgPath, 446, 16, "Partition Entry #1", hexArray, "")));
@@ -100,9 +101,61 @@ function parseMbr(imgPath) {
     return mbr;
 };
 
+function tryParseGpt(imgPath, sectorSize) {
+    let mbr = tryParseMbr(imgPath);
+    // check if only one partition is used (protective mbr)
+    let numPart = 0;
+    mbr.partitionList.forEach(p => {
+        if (p.numSectors > 0 ) {
+            numPart++;
+        }
+    });
+    if (numPart != 1 || p[0].partType != 0xEE) {
+        throw "Protective MBR invalid!";
+    }
+    // Protective MBR is valid; Try to parse GPT header
+    let gptHeader = createGptHeaderTemplate(imgPath, sectorSize);
+    // check GPT signature
+    let gptSig = gptHeader.children[0].value;
+    if (gptSig != "EFI PART") {
+        throw `Wrong GPT signature: ${gptSig}`;
+    }
+    gptHeader.signature = gptSig;
+    // check header size 
+    let headerSize = gptHeader.children[2].value;
+    if (headerSize != 92) {
+        throw `Header size value (${headerSize}) not matching with real header size (${92})`;
+    }
+    gptHeader.headerSize = headerSize;
+    // check CRC32
+
+
+}
+
+function createGptHeaderTemplate(imgPath, sectorSize) {
+    let sectorOffset = sectorSize*1;
+    let gptHeader = new DataSection(imgPath, sectorOffset, sectorSize*1, "GPT Header", hexArray, "");
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 0, 8, "Signature", ascii, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 8, 4, "Revision", hexArray, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 12, 4, "Header size", uintLE, "in bytes"));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 16, 4, "CRC32 of header", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 20, 4, "Reserved", uintLE, "must be zero"));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 24, 8, "Current LBA", uintLE, "location of this header copy"));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 32, 8, "Backup LBA", uintLE, "location of the other header copy"));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 40, 8, "First LBA for partitions", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 48, 8, "Last usable LBA for paritions", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 56, 16, "Disk GUID", hexArray, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 72, 8, "Start LBA of partition entries", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 80, 4, "Number of partition entries", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 84, 4, "Size of partition entry", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 88, 4, "CRC32 of partition entries array", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 92, sectorSize-92, "Reserved", uintLE, "must be zeros"));
+    return gptHeader;
+}
+
 function addPartitionEntry(ds) {
-    var offset = ds.offset;
-    var imgPath = ds.imgPath;
+    let offset = ds.offset;
+    let imgPath = ds.imgPath;
     // 0,1 status
     ds.children.push(new DataSection(imgPath, offset+0, 1, "Status", uintLE, "Status of the Partition"));
     // 1,3 CHS address of start sector
@@ -124,16 +177,16 @@ function analyzeGpt(imgPath) {
 }
 
 function clearParitionList() {
-    var ul = document.getElementById("partList");
+    let ul = document.getElementById("partList");
     while(ul.firstChild) ul.removeChild(ul.firstChild);
 }
 
-function createPartitionElement(ds) {
-    var item = document.createElement("li");
+function createPartitionElement(ds, sectorSize) {
+    let item = document.createElement("li");
     item.classList.add("sectordesc");
     item.innerHTML = "<div>" + ds.name + "</div>";
-    item.innerHTML += "<div>" + "Sector Offset: " + ds.offset / 512 + "</div>";
-    item.innerHTML += "<div>" + "Num of Sectors: " + ds.size / 512 + "</div>";
+    item.innerHTML += "<div>" + "Sector Offset: " + ds.offset / sectorSize + "</div>";
+    item.innerHTML += "<div>" + "Num of Sectors: " + ds.size / sectorSize + "</div>";
     item.onclick = (() => {
         clearDetailedView();
         createDetailedView(ds);
@@ -142,23 +195,23 @@ function createPartitionElement(ds) {
 }
 
 function clearDetailedView() {
-    var tBody = document.getElementById("detailsBody");
+    let tBody = document.getElementById("detailsBody");
     while (tBody.firstChild) tBody.removeChild(tBody.firstChild);
     
 }
 
 function createDetailedView(ds) {
-    var old_tbody = document.getElementById("detailsBody");
-    var new_tbody = old_tbody.cloneNode();
+    let old_tbody = document.getElementById("detailsBody");
+    let new_tbody = old_tbody.cloneNode();
     
     old_tbody.parentNode.replaceChild(new_tbody, old_tbody);
-    var childs = dsToTableRows(new_tbody, ds);
+    let childs = dsToTableRows(new_tbody, ds);
 }
 
 function dsToTableRows(tBody, ds) {
-    var row = tBody.insertRow(-1);
+    let row = tBody.insertRow(-1);
     dsFillRow(row, ds);
-    var node = {};
+    let node = {};
     node.row = row;
     
     node.children = [];
@@ -172,14 +225,14 @@ function dsToTableRows(tBody, ds) {
         row.onclick = ( function (){
             
             if (node.collapsed) {
-                var nodes = getSubnodes(node, 1);
+                let nodes = getSubnodes(node, 1);
                 nodes.forEach(element => {
                     element.row.classList.remove("hidden");
                 });
                 node.collapsed = false;
             }
             else {
-                var nodes = getSubnodes(node);
+                let nodes = getSubnodes(node);
                 nodes.forEach(element => {
                     if (element.hasOwnProperty("collapsed")) {
                         element.collapsed = true;
@@ -195,7 +248,7 @@ function dsToTableRows(tBody, ds) {
 }
 
 function getSubnodes(node, levels = -1) {
-    var list = []
+    let list = []
     
     if (levels != -1) {
         levels--;
@@ -204,7 +257,7 @@ function getSubnodes(node, levels = -1) {
 
     node.children.forEach(element => {
         list.push(element);
-        var subnodes = (getSubnodes(element, levels));
+        let subnodes = (getSubnodes(element, levels));
         subnodes.forEach(element => {
             list.push(element);
         });
@@ -217,7 +270,7 @@ function dsFillRow(row, ds) {
     row.insertCell(-1).innerHTML = ds.size;
     row.insertCell(-1).innerHTML = ds.name;
 
-    var valRow = row.insertCell(-1);
+    let valRow = row.insertCell(-1);
     valRow.classList.add("value");
     if (ds.valueType == hexArray && ds.size > 32)
         valRow.innerHTML = ds.value.slice(0, 32).concat(["..."]);
@@ -262,9 +315,9 @@ class DataSection {
             } 
         
         // open image
-        var fd = fs.openSync(this.imgPath, 'r');
-        var rBuf = Buffer.alloc(size);
-        var numRead = fs.readSync(fd, rBuf, 0, size, offset);
+        let fd = fs.openSync(this.imgPath, 'r');
+        let rBuf = Buffer.alloc(size);
+        let numRead = fs.readSync(fd, rBuf, 0, size, offset);
         fs.closeSync(fd);
         if (numRead == size) {
             console.log("Sucessfully read:", numRead, "bytes.");
@@ -296,7 +349,7 @@ function hexArray(data) {
     rawStr += values;
     rawStr += "]";
     return rawStr; */
-    var ar = [];
+    let ar = [];
     for (const elem of data) {
         ar.push(("00" + elem.toString(16).toUpperCase()).slice(-2));
     }

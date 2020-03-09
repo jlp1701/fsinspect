@@ -7,6 +7,18 @@ body > div {
     margin: 5px;
 }
 
+div.horizontal-container {
+  margin: 5px;
+}
+
+div.horizontal-container > div {
+  float: left;
+  margin: 0px 5px 0px 0px;
+}
+
+div.clear {
+  clear: both;
+}
 
 /* Partition View */
 ul {

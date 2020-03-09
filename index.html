@@ -11,10 +11,21 @@
   </head>
   <body>
     <h1>fsinspect</h1>
-    <div>
-      Select a disk image: 
-      <input id="imgPath" type="text" value="/home/burndi/fsinspect/test.img">
-      <button onclick="onLoadImage()">Load image</button>
+    <div>Select a disk image and set sector size of it: </div>
+    <div >
+      <div class="horizontal-container">
+        <div >Image path: </div>
+        <div ><input id="imgPath" type="text" value="/home/burndi/fsinspect/test.img"></div>  
+      </div>
+      <div class="clear"></div>
+      <div class="horizontal-container">
+        <div >Sector size: </div>
+        <div ><input id="sectorSize" type="number" value="512" style="width: 75px; text-align: right;"></div>
+      </div>
+      <div class="clear"></div>
+      <div class="horizontal-container">
+        <button onclick="onLoadImage()">Load image</button>
+      </div>
       <p id="loadImageErrorMsg" class="errorMsg hidden">This is an Error!</p>
     </div>
 
