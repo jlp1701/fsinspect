@@ -2,18 +2,12 @@
 
 let fs = require("fs");
 let util = require("util");
+let crc = require("crc");
 
 function onLoadImage() {
     let imgPath = document.getElementById("imgPath").value;
     let sectorSize =  parseInt(document.getElementById("sectorSize").value);
     console.log("Loading image:", imgPath);
-    // let p1 = new PartInfo("MBR", 0, 1);
-    // let p2 = new PartInfo("Lul", 1, 1337);
-    // let p3 = new PartInfo("Rofl", 1338, 114);
-    // let partList = document.getElementById("partList");
-    // partList.appendChild(createPartitionElement(p1));
-    // partList.appendChild(createPartitionElement(p2));
-    // partList.appendChild(createPartitionElement(p3));
     
     clearLoadImgErrMsg();
     clearParitionList();
@@ -33,6 +27,13 @@ function onLoadImage() {
     partList.appendChild(createPartitionElement(mbr, sectorSize));
 
     // check if disk has GPT
+    try {
+        tryParseGpt(imgPath, sectorSize);
+    } catch (error) {
+        console.log(error);
+        setLoadImgErrorMsg(error);
+        return;
+    }
 
     // analyze paritions
     let i = 1;
@@ -110,7 +111,7 @@ function tryParseGpt(imgPath, sectorSize) {
             numPart++;
         }
     });
-    if (numPart != 1 || p[0].partType != 0xEE) {
+    if (numPart != 1 || mbr.partitionList[0].partType != 0xEE) {
         throw "Protective MBR invalid!";
     }
     // Protective MBR is valid; Try to parse GPT header
@@ -127,8 +128,18 @@ function tryParseGpt(imgPath, sectorSize) {
         throw `Header size value (${headerSize}) not matching with real header size (${92})`;
     }
     gptHeader.headerSize = headerSize;
-    // check CRC32
-
+    
+    // check CRC32 for gpt header
+    let crc32Header = gptHeader.children[3].value;
+    let headerData = gptHeader.readData(gptHeader.offset, headerSize);
+    for (let i = 0; i < 4; i++) {
+        headerData[16 + i] = 0;  // clear current CRC32 value 
+    }
+    let computedCrc = crc.crc32(headerData);
+    if (computedCrc != crc32Header) {
+        throw `CRC32 mismatch for GPT header. Read: ${crc32Header}; calculated: ${computedCrc}`;
+    }
+    gptHeader.crc32Header = crc32Header;
 
 }
 
@@ -354,6 +365,14 @@ function hexArray(data) {
         ar.push(("00" + elem.toString(16).toUpperCase()).slice(-2));
     }
     return ar;
+}
+
+function ascii(data) {
+    let retStr = "";
+    for (const d of data) {
+        retStr += String.fromCharCode(d);
+    }
+    return retStr;
 }
 
 function uintLE(data) {
