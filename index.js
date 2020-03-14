@@ -35,8 +35,12 @@ function onLoadImage() {
         let mbrDisk = parseDiskWithMBR(imgPath, sectorSize);
 
         let partList = document.getElementById("partList");
-        partList.appendChild(createPartitionElement(mbr, sectorSize));
+        partList.appendChild(createPartitionElement(mbrDisk.mbr, sectorSize));
     
+        for (const p of mbrDisk.partitions) {
+            partList.appendChild(createPartitionElement(p, sectorSize));
+        }
+
     } else {
         // GPT scheme
         let gptDisk = parseDiskWithGPT(imgPath, sectorSize);
@@ -46,9 +50,9 @@ function onLoadImage() {
         partList.appendChild(createPartitionElement(gptDisk.primaryGPT.header, sectorSize));
         partList.appendChild(createPartitionElement(gptDisk.primaryGPT.partitionList, sectorSize));
     
-   /*      for (const p of gptDisk.partitions) {
+        for (const p of gptDisk.partitions) {
             partList.appendChild(createPartitionElement(p, sectorSize));
-        } */
+        }
 
         partList.appendChild(createPartitionElement(gptDisk.secondaryGPT.partitionList, sectorSize));
         partList.appendChild(createPartitionElement(gptDisk.secondaryGPT.header, sectorSize));
@@ -86,6 +90,26 @@ function setLoadImgErrorMsg(msg) {
 
 function clearLoadImgErrMsg() {
     document.getElementById("loadImageErrorMsg").classList.add("hidden");
+}
+
+function parseDiskWithMBR(imgPath, sectorSize) {
+
+    let mbr = tryParseMbr(imgPath);
+
+    // create DataSections for partitions
+    let partitions = [];
+    let i = 0;
+    for (const p of mbr.partitionList) {
+        let parOffset = p.startLBA * sectorSize;
+        let partSize = p.numSectors * sectorSize;
+        if (partSize > 0) {
+            partitions.push(new DataSection(imgPath, parOffset, partSize, `Partition #${++i}`, hexArray, ""));
+        }
+    }
+    return {
+        mbr: mbr,
+        partitions, partitions
+    };
 }
 
 // checks if image has Msdos/MBR or GPT partition scheme or invalid
@@ -152,7 +176,9 @@ function parseDiskWithGPT(imgPath, sectorSize) {
     // create DataSections for partitions
     let partitions = [];
     for (const p of primaryGPT.partitionList.children) {
-        partitions.push(new DataSection(imgPath, p.offset, p.size, p.name, hexArray, ""));
+        let parOffset = p.children[2].value * sectorSize;
+        let partSize = p.children[3].value * sectorSize - parOffset;
+        partitions.push(new DataSection(imgPath, parOffset, partSize, p.name, hexArray, ""));
     }
 
     return {
@@ -268,7 +294,7 @@ function addGPTPartitionEntry(ds) {
     ds.children.push(new DataSection(imgPath, offset + 32, 8, "First LBA", uintLE, ""));
     ds.children.push(new DataSection(imgPath, offset + 40, 8, "Last LBA", uintLE, "inclusive"));
     ds.children.push(new DataSection(imgPath, offset + 48, 8, "Attribute Flags", uintLE, ""));
-    ds.children.push(new DataSection(imgPath, offset + 56, 72, "Partition name", hexArray, ""));
+    ds.children.push(new DataSection(imgPath, offset + 56, 72, "Partition name", utf16, ""));
     return ds;   
 }
 
@@ -481,6 +507,17 @@ function ascii(data) {
         retStr += String.fromCharCode(d);
     }
     return retStr;
+}
+
+function utf16(data) {
+    if (data.length % 2 !== 0) {
+        throw `Odd length of byte array when parsing UTF-16 encoding.`;
+    }
+    let utf16Str = "";
+    for (let i = 0; i < data.length; i += 2) {
+        utf16Str += String.fromCharCode(uintLE(data.slice(i, i + 2)));
+    }
+    return utf16Str;
 }
 
 function guid(data) {
