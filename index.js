@@ -22,13 +22,42 @@ function onLoadImage() {
         setLoadImgErrorMsg(error);
         return;
     }
-    // MBR sucessfully parsed
-    let partList = document.getElementById("partList");
-    partList.appendChild(createPartitionElement(mbr, sectorSize));
 
-    // check if disk has GPT
+    // check if gpt partition
+    let numPart = 0;
+    mbr.partitionList.forEach(p => {
+        if (p.numSectors > 0 ) {
+            numPart++;
+        }
+    });
+    if (numPart != 1 || mbr.partitionList[0].partType != 0xEE) {
+        // MBR scheme
+        let mbrDisk = parseDiskWithMBR(imgPath, sectorSize);
+
+        let partList = document.getElementById("partList");
+        partList.appendChild(createPartitionElement(mbr, sectorSize));
+    
+    } else {
+        // GPT scheme
+        let gptDisk = parseDiskWithGPT(imgPath, sectorSize);
+
+        let partList = document.getElementById("partList");
+        partList.appendChild(createPartitionElement(mbr, sectorSize));
+        partList.appendChild(createPartitionElement(gptDisk.primaryGPT.header, sectorSize));
+        partList.appendChild(createPartitionElement(gptDisk.primaryGPT.partitionList, sectorSize));
+    
+   /*      for (const p of gptDisk.partitions) {
+            partList.appendChild(createPartitionElement(p, sectorSize));
+        } */
+
+        partList.appendChild(createPartitionElement(gptDisk.secondaryGPT.partitionList, sectorSize));
+        partList.appendChild(createPartitionElement(gptDisk.secondaryGPT.header, sectorSize));
+        
+    }
+
+/*     // check if disk has GPT
     try {
-        tryParseGpt(imgPath, sectorSize);
+        tryParseGPT(imgPath, sectorSize);
     } catch (error) {
         console.log(error);
         setLoadImgErrorMsg(error);
@@ -45,7 +74,7 @@ function onLoadImage() {
 
             // if yes, then parse filesystem
         }
-    }
+    } */
 
 };
 
@@ -93,16 +122,17 @@ function tryParseMbr(imgPath) {
 function createMbrTemplate(imgPath) {
     let mbr = new DataSection(imgPath, 0, 512, "MBR", hexArray, "Master Boot Record");
     mbr.children.push(new DataSection(imgPath, 0, 446, "Boot code", hexArray, "Bootstrap code area"));
-    mbr.children.push(addPartitionEntry(new DataSection(imgPath, 446, 16, "Partition Entry #1", hexArray, "")));
-    mbr.children.push(addPartitionEntry(new DataSection(imgPath, 462, 16, "Partition Entry #2", hexArray, "")));
-    mbr.children.push(addPartitionEntry(new DataSection(imgPath, 478, 16, "Partition Entry #3", hexArray, "")));
-    mbr.children.push(addPartitionEntry(new DataSection(imgPath, 494, 16, "Partition Entry #4", hexArray, "")));
+    mbr.children.push(addMBRPartitionEntry(new DataSection(imgPath, 446, 16, "Partition Entry #1", hexArray, "")));
+    mbr.children.push(addMBRPartitionEntry(new DataSection(imgPath, 462, 16, "Partition Entry #2", hexArray, "")));
+    mbr.children.push(addMBRPartitionEntry(new DataSection(imgPath, 478, 16, "Partition Entry #3", hexArray, "")));
+    mbr.children.push(addMBRPartitionEntry(new DataSection(imgPath, 494, 16, "Partition Entry #4", hexArray, "")));
     mbr.children.push(new DataSection(imgPath, 510, 2, "Signature", uintBE,  "The signature"));
 
     return mbr;
 };
 
-function tryParseGpt(imgPath, sectorSize) {
+function parseDiskWithGPT(imgPath, sectorSize) {
+    
     let mbr = tryParseMbr(imgPath);
     // check if only one partition is used (protective mbr)
     let numPart = 0;
@@ -114,8 +144,46 @@ function tryParseGpt(imgPath, sectorSize) {
     if (numPart != 1 || mbr.partitionList[0].partType != 0xEE) {
         throw "Protective MBR invalid!";
     }
+
+    // parse primary and secondary GPT
+    let primaryGPT = tryParseGPT(imgPath, sectorSize, sectorSize*1);
+    let secondaryGPT = tryParseGPT(imgPath, sectorSize, sectorSize*primaryGPT.header.backupLBA);
+
+    // create DataSections for partitions
+    let partitions = [];
+    for (const p of primaryGPT.partitionList.children) {
+        partitions.push(new DataSection(imgPath, p.offset, p.size, p.name, hexArray, ""));
+    }
+
+    return {
+        // protectiveMBR
+        primaryGPT: primaryGPT,
+        partitions: partitions,
+        secondaryGPT: secondaryGPT,
+    };
+}
+
+function tryParseGPT(imgPath, sectorSize, offset) {
+
     // Protective MBR is valid; Try to parse GPT header
-    let gptHeader = createGptHeaderTemplate(imgPath, sectorSize);
+    let gptHeader = tryParseGptHeader(imgPath, sectorSize, offset);
+
+    // parse partition entries
+    let {partitionList, crc32} = tryParseGptPartitionArray(imgPath, sectorSize, gptHeader.partitionEntriesLBA*sectorSize, gptHeader.numPartEntries, gptHeader.sizePartEntry);
+
+    // verify CRC32 of partition array
+    if (crc32 != gptHeader.crc32PartEntries) {
+        throw `CRC32 mismatch for GPT partitions. Read: ${gptHeader.crc32PartEntries}; calculated: ${crc32}`;
+    }
+    
+    return {
+        header: gptHeader,
+        partitionList: partitionList
+    };
+}
+
+function tryParseGptHeader(imgPath, sectorSize, offset) {
+    let gptHeader = createGptHeaderTemplate(imgPath, sectorSize, offset);
     // check GPT signature
     let gptSig = gptHeader.children[0].value;
     if (gptSig != "EFI PART") {
@@ -141,30 +209,70 @@ function tryParseGpt(imgPath, sectorSize) {
     }
     gptHeader.crc32Header = crc32Header;
 
-}
-
-function createGptHeaderTemplate(imgPath, sectorSize) {
-    let sectorOffset = sectorSize*1;
-    let gptHeader = new DataSection(imgPath, sectorOffset, sectorSize*1, "GPT Header", hexArray, "");
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 0, 8, "Signature", ascii, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 8, 4, "Revision", hexArray, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 12, 4, "Header size", uintLE, "in bytes"));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 16, 4, "CRC32 of header", uintLE, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 20, 4, "Reserved", uintLE, "must be zero"));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 24, 8, "Current LBA", uintLE, "location of this header copy"));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 32, 8, "Backup LBA", uintLE, "location of the other header copy"));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 40, 8, "First LBA for partitions", uintLE, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 48, 8, "Last usable LBA for paritions", uintLE, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 56, 16, "Disk GUID", hexArray, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 72, 8, "Start LBA of partition entries", uintLE, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 80, 4, "Number of partition entries", uintLE, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 84, 4, "Size of partition entry", uintLE, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 88, 4, "CRC32 of partition entries array", uintLE, ""));
-    gptHeader.children.push(new DataSection(imgPath, sectorOffset + 92, sectorSize-92, "Reserved", uintLE, "must be zeros"));
+    gptHeader.currentLBA = gptHeader.children[5].value;
+    gptHeader.backupLBA = gptHeader.children[6].value;
+    gptHeader.firstUsableLBA = gptHeader.children[7].value;
+    gptHeader.lastUsableLBA = gptHeader.children[8].value;
+    gptHeader.diskGUID = gptHeader.children[9].value;
+    gptHeader.partitionEntriesLBA = gptHeader.children[10].value;
+    gptHeader.numPartEntries = gptHeader.children[11].value;
+    gptHeader.sizePartEntry = gptHeader.children[12].value;
+    gptHeader.crc32PartEntries = gptHeader.children[13].value;
     return gptHeader;
 }
 
-function addPartitionEntry(ds) {
+function createGptHeaderTemplate(imgPath, sectorSize, offset) {
+    let gptHeader = new DataSection(imgPath, offset, sectorSize*1, "GPT Header", hexArray, "");
+    gptHeader.children.push(new DataSection(imgPath, offset + 0, 8, "Signature", ascii, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 8, 4, "Revision", hexArray, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 12, 4, "Header size", uintLE, "in bytes"));
+    gptHeader.children.push(new DataSection(imgPath, offset + 16, 4, "CRC32 of header", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 20, 4, "Reserved", uintLE, "must be zero"));
+    gptHeader.children.push(new DataSection(imgPath, offset + 24, 8, "Current LBA", uintLE, "location of this header copy"));
+    gptHeader.children.push(new DataSection(imgPath, offset + 32, 8, "Backup LBA", uintLE, "location of the other header copy"));
+    gptHeader.children.push(new DataSection(imgPath, offset + 40, 8, "First LBA for partitions", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 48, 8, "Last usable LBA for paritions", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 56, 16, "Disk GUID", guid, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 72, 8, "Start LBA of partition entries", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 80, 4, "Number of partition entries", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 84, 4, "Size of partition entry", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 88, 4, "CRC32 of partition entries array", uintLE, ""));
+    gptHeader.children.push(new DataSection(imgPath, offset + 92, sectorSize-92, "Reserved", uintLE, "must be zeros"));
+    return gptHeader;
+}
+
+function tryParseGptPartitionArray(imgPath, sectorSize, offset, numPartEntries, sizePartEntry){
+    let dsPartitionList = new DataSection(imgPath, offset, numPartEntries*sizePartEntry, "Partition Array", hexArray, "");    
+
+    for (let i = 0; i < numPartEntries; i++) {
+        let p = addGPTPartitionEntry(new DataSection(imgPath, offset + i*sizePartEntry, sizePartEntry, `Partition Entry #${i+1}`, hexArray, ""));
+        //crcData = crcData.concat(p.value)
+        if (p.children[0].value != "00000000-0000-0000-0000-000000000000") {
+            dsPartitionList.children.push(p);
+        }
+    }
+    let computedCrc = crc.crc32(dsPartitionList.readData(dsPartitionList.offset, numPartEntries*sizePartEntry));
+
+    return {
+        partitionList: dsPartitionList,
+        crc32: computedCrc
+    };
+}
+
+function addGPTPartitionEntry(ds) {
+    let offset = ds.offset;
+    let imgPath = ds.imgPath;
+    // parse entry
+    ds.children.push(new DataSection(imgPath, offset + 0, 16, "Partition Type GUID", guid, ""));
+    ds.children.push(new DataSection(imgPath, offset + 16, 16, "Unique partition GUID", guid, ""));
+    ds.children.push(new DataSection(imgPath, offset + 32, 8, "First LBA", uintLE, ""));
+    ds.children.push(new DataSection(imgPath, offset + 40, 8, "Last LBA", uintLE, "inclusive"));
+    ds.children.push(new DataSection(imgPath, offset + 48, 8, "Attribute Flags", uintLE, ""));
+    ds.children.push(new DataSection(imgPath, offset + 56, 72, "Partition name", hexArray, ""));
+    return ds;   
+}
+
+function addMBRPartitionEntry(ds) {
     let offset = ds.offset;
     let imgPath = ds.imgPath;
     // 0,1 status
@@ -331,7 +439,7 @@ class DataSection {
         let numRead = fs.readSync(fd, rBuf, 0, size, offset);
         fs.closeSync(fd);
         if (numRead == size) {
-            console.log("Sucessfully read:", numRead, "bytes.");
+            //console.log("Sucessfully read:", numRead, "bytes.");
             return rBuf;
         } 
         else {
@@ -373,6 +481,44 @@ function ascii(data) {
         retStr += String.fromCharCode(d);
     }
     return retStr;
+}
+
+function guid(data) {
+    if (data.length != 16) {
+        throw `Parsing GUID: Wrong size: ${data.length}; Expected: 16`;
+    }
+    let guidStr = "";
+    
+    // extract bytes [0,3]
+    data.slice(0, 4).reverse().forEach(d => {
+        guidStr += ("00" + d.toString(16).toUpperCase()).slice(-2);
+    });
+    guidStr += "-";
+
+    // extract bytes [4,5]
+    data.slice(4, 6).reverse().forEach(d => {
+        guidStr += ("00" + d.toString(16).toUpperCase()).slice(-2);
+    });
+    guidStr += "-";
+
+    // extract bytes [6,7]
+    data.slice(6, 8).reverse().forEach(d => {
+        guidStr += ("00" + d.toString(16).toUpperCase()).slice(-2);
+    });
+    guidStr += "-";
+
+    // extract bytes [8,9]
+    data.slice(8, 10).forEach(d => {
+        guidStr += ("00" + d.toString(16).toUpperCase()).slice(-2);;
+    });
+    guidStr += "-";
+
+    // extract bytes [10,15]
+    data.slice(10, 16).forEach(d => {
+        guidStr += ("00" + d.toString(16).toUpperCase()).slice(-2);
+    });
+
+    return guidStr;
 }
 
 function uintLE(data) {
