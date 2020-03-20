@@ -52,6 +52,12 @@ function onLoadImage() {
     
         for (const p of gptDisk.partitions) {
             partList.appendChild(createPartitionElement(p, sectorSize));
+            try {
+                let FAT32Volume = tryParseFAT32(p.imgPath, p.offset, p.size, sectorSize);
+                p.children.push(FAT32Volume);
+            } catch (error) {
+                console.log(`Error while trying to parse FAT32 volume: ${error}`);
+            }
         }
 
         partList.appendChild(createPartitionElement(gptDisk.secondaryGPT.partitionList, sectorSize));
@@ -176,9 +182,10 @@ function parseDiskWithGPT(imgPath, sectorSize) {
     // create DataSections for partitions
     let partitions = [];
     for (const p of primaryGPT.partitionList.children) {
-        let parOffset = p.children[2].value * sectorSize;
-        let partSize = p.children[3].value * sectorSize - parOffset;
-        partitions.push(new DataSection(imgPath, parOffset, partSize, p.name, hexArray, ""));
+        let firstLBA = p.children[2].value;
+        let lastLBA = p.children[3].value;
+        let size = (lastLBA - firstLBA + 1) * sectorSize;
+        partitions.push(new DataSection(imgPath, firstLBA * sectorSize, size, p.name, hexArray, ""));
     }
 
     return {
@@ -316,10 +323,6 @@ function addMBRPartitionEntry(ds) {
     return ds;
 }
 
-// analyze gpt scheme
-function analyzeGpt(imgPath) {
-    
-}
 
 function clearParitionList() {
     let ul = document.getElementById("partList");
@@ -337,6 +340,90 @@ function createPartitionElement(ds, sectorSize) {
         createDetailedView(ds);
     });
     return item;
+}
+
+function tryParseFAT32(imgPath, offset, size, sectorSize) {
+    // parse reserved area
+    // parse boot sector
+    let dsBootSector = createFAT32BootSectorTemplate(imgPath, offset, sectorSize);
+    // get number of sectors of reserved area
+    let sectorsResArea = dsBootSector.children[4].value;
+    let dsReservedArea = new DataSection(imgPath, offset, sectorsResArea * sectorSize, "Reserved Area", hexArray, "");
+    dsReservedArea.children.push(dsBootSector);
+
+    // check if FAT version (offset 0x52, len 8) == "FAT32   "
+    let FATVersion = dsBootSector.children[26].value;
+    if (FATVersion != "FAT32   ") {
+        throw `Wrong FAT version: ${FATVersion}.`;
+    }
+
+    // parse all FATs
+    let sectorsPerFAT = dsBootSector.children[14].value;
+    let numFATs = dsBootSector.children[5].value;
+    let totalSectors = dsBootSector.children[7].value;
+    if (totalSectors == 0) { // check if number of sectors is > 2^16
+        totalSectors = dsBootSector.children[13].value;
+    }
+    let dsFATArea = new DataSection(imgPath, offset + sectorsResArea * sectorSize, numFATs * sectorsPerFAT * sectorSize, "FAT Area", hexArray, "Contains all FAT copies");
+    for (let i = 0; i < numFATs; i++) {
+        let dsFAT = tryParseFAT(imgPath, dsFATArea.offset + i * sectorsPerFAT * sectorSize, sectorsPerFAT * sectorSize);
+        dsFATArea.children.push(dsFAT);
+    }
+
+    // parse data area
+    let dsDataArea = new DataSection(imgPath, dsFATArea.offset + dsFATArea.size, totalSectors * sectorSize - (dsReservedArea.size + dsFATArea.size), "Data Area", hexArray, "");
+    let dsFAT32 = new DataSection(imgPath, offset, dsReservedArea.size + dsFATArea.size + dsDataArea.size, "FAT32 file system", hexArray, "");
+    dsFAT32.children.push(dsReservedArea);
+    dsFAT32.children.push(dsFATArea);
+    dsFAT32.children.push(dsDataArea);
+    return dsFAT32;
+}
+
+function createFAT32BootSectorTemplate(imgPath, offset, sectorSize) {
+    let dsBootSector = new DataSection(imgPath, offset, sectorSize*1, "boot sector", hexArray, ""); // size can be adjusted as it can be changed within the boot sector
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x00, 3, "machine code", hexArray, "Typically used to jump to boot code."));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x03, 8, "OEM name", ascii, "Padded with spaces."));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x0B, 2, "Bytes per sector", uintLE, "Valid values are 512, 1024, 2048, 4096."));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x0D, 1, "Sectors per cluster", uintLE, "Value is power of two between 1 and 64 (sometimes also 128)."));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x0E, 2, "Number of sectors of reserved area", uintLE, "Inlcuding boot sector"));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x10, 1, "Number of FAT copies", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x11, 2, "Max entries in root dir", uintLE, "Unused"));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x13, 2, "Max number of sectors", uintLE, "Unused"));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x15, 1, "Media Descriptor Byte", uintLE, "Deprecated"));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x16, 2, "Number of sectors per FAT", uintLE, "Unused"));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x18, 2, "Sectors per track", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x1A, 2, "Number of heads", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x1C, 4, "Number of hidden sectors", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x20, 4, "Number of total sectors", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x24, 4, "Number of sectors per FAT", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x28, 2, "FAT flags", hexArray, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x2A, 2, "FAT32 version", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x2C, 4, "Cluster number of root dir", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x30, 2, "Sector of FS information sector", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x32, 2, "Sector of boot sector copy", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x34, 12, "reserved", hexArray, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x40, 1, "Physical BIOS volume number", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x41, 1, "reserved", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x42, 1, "extended boot signature", hexArray, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x43, 4, "Serial ID", uintLE, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x47, 11, "Name of file system", hexArray, "Unused"));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x52, 8, "FAT version", ascii, "Always 'FAT32   '"));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x5A, 420, "Boot code", hexArray, ""));
+    dsBootSector.children.push(new DataSection(imgPath, offset + 0x1FE, 2, "Boot signature", uintLE, ""));
+
+    return dsBootSector;
+}
+
+function tryParseFAT(imgPath, offset, size) {
+    let dsFAT = new DataSection(imgPath, offset, size, "FAT", hexArray, "");
+    for (let entryOffset = 0; entryOffset < size; entryOffset += 4) {
+        let FATEntry = new DataSection(imgPath, offset + entryOffset, 4, "FAT Entry", uintLE, "");
+        if (FATEntry.value != 0) {
+            dsFAT.children.push(FATEntry);
+        }
+    }
+    console.log(`Number of non-empty FAT entries: ${dsFAT.children.length}`);
+    return dsFAT;
 }
 
 function clearDetailedView() {
